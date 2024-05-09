@@ -64,18 +64,18 @@ namespace MidiSongExtension {
         }
 
         public static Start(toPlay: MidiSong): void {
-            if (!this.initialized) {
-                this.Initialize();
+            if (!MidiPlayer.initialized) {
+                MidiPlayer.Initialize();
             }
-            this.nextNoteData = MidiPlayer.GetNextNote();
-            this.playing = [toPlay];
-            this.msPer16th = DataParsing.BPMtoMSp16th(toPlay.bpm);
+            MidiPlayer.nextNoteData = MidiPlayer.GetNextNote();
+            MidiPlayer.playing = [toPlay];
+            MidiPlayer.msPer16th = DataParsing.BPMtoMSp16th(toPlay.bpm);
         }
 
         public static Stop(): void {
-            this.playing = [];
-            this.playingSong = false;
-            this.msPer16th = 0;
+            MidiPlayer.playing = [];
+            MidiPlayer.playingSong = false;
+            MidiPlayer.msPer16th = 0;
         }
     }
 }
