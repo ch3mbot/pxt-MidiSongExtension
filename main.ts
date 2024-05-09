@@ -244,15 +244,62 @@ namespace MidiSongExtension.DataParsing {
 
 // a few instruments to play
 namespace MidiSongExtension.Instruments {
+    // generic instrument function
     export type InstrumentFunction = (pitch: number, length: number, vol?: number) => void; 
+
+    // play a note given an instrument function, pitch (hz), and a length (ms)
     export function PlayNote(instrumentFunction: InstrumentFunction, pitch: number, length: number): void {
         instrumentFunction(pitch, length); //#FIXME vol parameter when not given gets set to 'undefined'
+    }
+
+    // formula to convert from decibels to amplitude
+    export function DBtoAmp(db: number): number {
+        return Math.pow(10, db / 20);
+    }
+
+    // based on a sine wave table generate an instrument (additive synthesis) #TODO add ADSR envellope support?
+    // waveTable: number[][] where each element is a [frequency (hz), relative amplitude (db)] array. see acousticGuitar for example
+    export function GenerateSineWaveInstrument(waveDataTable: number[][], loudestIndex: number, baseFreqIndex: number, defaultVolume: number = 255, falloffVol: number = 0): InstrumentFunction {
+        return (freq, length, vol = defaultVolume) => {
+            if (vol === undefined)
+                vol = defaultVolume;
+            for (let waveData of waveDataTable) {
+                let modifiedFreq = (waveData[0] / waveDataTable[baseFreqIndex][0]) * freq;
+                let dbVol = DBtoAmp(waveData[1] - waveDataTable[loudestIndex][1]);
+                music.play(music.createSoundEffect(
+                    WaveShape.Sine,
+                    modifiedFreq,
+                    modifiedFreq,
+                    dbVol * (255 * vol / 255),
+                    falloffVol * dbVol * (255 * vol / 255),
+                    length,
+                    SoundExpressionEffect.None,
+                    InterpolationCurve.Linear
+                ), music.PlaybackMode.InBackground);
+            }
+        }
     }
 
     // blank instrument to ignore a channel
     export const noSound: InstrumentFunction = (freq, length, vol = 255) => {
 
     }
+
+    // attempted guitar sound #TODO make work with envelope 
+    let guitarSoundWaveTable = [
+        [56, -64],
+        [82, -26.3],
+        [125, -68.7],
+        [165, -15.9],
+        [248, -19.7],
+        [331, -32.2],
+        [414, -36.6],
+        [496, -26.3],
+        [579, -32.7],
+        [661, -56.7],
+
+    ];
+    export const acousticGuitar: InstrumentFunction = GenerateSineWaveInstrument(guitarSoundWaveTable, 3, 2, 255, 1);
 
     // credit for piano to ThatUruguayanGuy
     // from https://forum.makecode.com/t/various-instruments-recreated-in-makecode-arcade/24040
