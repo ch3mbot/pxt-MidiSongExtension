@@ -1,21 +1,23 @@
 namespace MidiSongExtension {
     export class MidiSong {
         public name: string;
+        public artist: string;
         public bpm: number;
         public songData: Buffer;
         public instrumentMap: Instruments.InstrumentFunction[];
 
-        constructor(name: string, bpm: number, songData: Buffer, instrumentMap: Instruments.InstrumentFunction[]) {
+        constructor(name: string, artist: string, bpm: number, songData: Buffer, instrumentMap: Instruments.InstrumentFunction[]) {
             this.name = name;
+            this.artist = artist;
             this.bpm = bpm;
             this.songData = songData;
             this.instrumentMap = instrumentMap;
         }
     }
     export class MidiPlayer {
-        public static playing: MidiSong[]; // #TODO add multiple song support?
+        public static activeSongList: MidiSong[]; // #TODO add multiple song support?
         public static initialized: boolean = false;
-        public static playingSong: boolean = false;
+        public static playing: boolean = false;
 
         // song playing variables
         public static lastNoteChange = 0;
@@ -34,7 +36,7 @@ namespace MidiSongExtension {
             };
             this.initialized = true;
             game.onUpdate(function () {
-                if (MidiPlayer.playingSong) {
+                if (MidiPlayer.playing) {
                     if (MidiPlayer.lastNoteChange + MidiPlayer.msPer16th <= game.runtime()) {
                         if (MidiPlayer.restingTime >= MidiPlayer.msPer16th) {
                             MidiPlayer.restingTime -= MidiPlayer.msPer16th;
@@ -44,7 +46,7 @@ namespace MidiSongExtension {
                         while (MidiPlayer.nextNoteData[0] == MidiPlayer.currentParityBit) {
                             if (MidiPlayer.nextNoteData[1] != 0) {
                                 Instruments.PlayNote(
-                                    MidiPlayer.playing[0].instrumentMap[MidiPlayer.nextNoteData[4] - 1],
+                                    MidiPlayer.activeSongList[0].instrumentMap[MidiPlayer.nextNoteData[4] - 1],
                                     DataParsing.noteIndexToFrequency(MidiPlayer.nextNoteData[2]), 
                                     (MidiPlayer.nextNoteData[3] + 1) * MidiPlayer.msPer16th);
                             } else {
@@ -62,22 +64,23 @@ namespace MidiSongExtension {
         }
 
         public static GetNextNote(): number[] {
-            return DataParsing.getNoteFromBufferV2(MidiPlayer.playing[0].songData, MidiPlayer.bufferOffsetIndex);
+            return DataParsing.getNoteFromBufferV2(MidiPlayer.activeSongList[0].songData, MidiPlayer.bufferOffsetIndex);
         }
 
         public static Start(toPlay: MidiSong): void {
-            game.splash("playing " + toPlay.name);
+            game.splash("playing " + toPlay.name, "by " + toPlay.artist);
             if (!MidiPlayer.initialized) {
                 MidiPlayer.Initialize();
             }
-            MidiPlayer.playing = [toPlay];
+            MidiPlayer.activeSongList = [toPlay];
             MidiPlayer.nextNoteData = MidiPlayer.GetNextNote();
             MidiPlayer.msPer16th = DataParsing.BPMtoMSp16th(toPlay.bpm);
+            MidiPlayer.playing = true;
         }
 
         public static Stop(): void {
-            MidiPlayer.playing = [];
-            MidiPlayer.playingSong = false;
+            MidiPlayer.activeSongList = [];
+            MidiPlayer.playing = false;
             MidiPlayer.msPer16th = 0;
         }
     }
@@ -231,9 +234,9 @@ namespace MidiSongExtension.DataParsing {
 
 // a few instruments to play
 namespace MidiSongExtension.Instruments {
-    export type InstrumentFunction = (pitch: number, length: number, volume?: number) => void;
+    export type InstrumentFunction = (pitch: number, length: number, vol?: number) => void; 
     export function PlayNote(instrumentFunction: InstrumentFunction, pitch: number, length: number): void {
-        instrumentFunction(pitch, length);
+        instrumentFunction(pitch, length); //#FIXME vol parameter when not given gets set to 'undefined'
     }
 
     // blank instrument to ignore a channel
@@ -244,6 +247,8 @@ namespace MidiSongExtension.Instruments {
     // credit for piano to ThatUruguayanGuy
     // from https://forum.makecode.com/t/various-instruments-recreated-in-makecode-arcade/24040
     export const acousticGrand: InstrumentFunction = (freq, length, vol = 255) => {
+        if(vol === undefined)
+            vol = 255;
         music.play(music.createSoundEffect(
             WaveShape.Sine,
             freq,
@@ -289,6 +294,8 @@ namespace MidiSongExtension.Instruments {
     // credit for piano to ThatUruguayanGuy
     // from https://forum.makecode.com/t/various-instruments-recreated-in-makecode-arcade/24040
     export const brightAcoustic: InstrumentFunction = (freq, length, vol = 255) => {
+        if (vol === undefined)
+            vol = 255;
         music.play(music.createSoundEffect(
             WaveShape.Sine,
             freq,
@@ -353,12 +360,16 @@ namespace MidiSongExtension.Instruments {
 
     // simple but somewhat poor base
     export const badBass: InstrumentFunction = (freq, length, vol = 100) => {
+        if (vol === undefined)
+            vol = 100;
         let melod = new music.Melody("~15 @1,0,90,1 !200,90^1");
         melod.play(vol);
     }
 
     // pretty solid high-hat
     export const hiHat: InstrumentFunction = (freq, length, vol = 100) => {
+        if (vol === undefined)
+            vol = 100;
         let melod = new music.Melody("@0,50,0,0 ~5 " + "c1-99999 ");
         melod.play(vol);
     }
@@ -366,6 +377,8 @@ namespace MidiSongExtension.Instruments {
     // manual stopping since caused issues without
     let saws: music.Melody[] = [];
     export const sawMaybe: InstrumentFunction = (freq, length, vol = 80) => {
+        if (vol === undefined)
+            vol = 80;
         while (saws.length > 0) {
             saws.pop().stop();
         }
