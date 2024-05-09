@@ -3,15 +3,25 @@ namespace MidiSongExtension {
         public name: string;
         public artist: string;
         public bpm: number;
+
+        // auto-generated song data buffer, data format explained in MidiSongExtension.DataParsing.getNoteFromBufferV2.
         public songData: Buffer;
+
+        // array of instrument functions. midi channel - 1 is the instrument chosen
+        // ex: midi channel 9 uses instrumentMap[8].
         public instrumentMap: Instruments.InstrumentFunction[];
 
-        constructor(name: string, artist: string, bpm: number, songData: Buffer, instrumentMap: Instruments.InstrumentFunction[]) {
+        // a seperate array of the notes this midi uses. auto-generated.
+        // needed since there are 109 possible notes but note pitch index is stored in 3 bits
+        public playedNoteMap: Buffer; 
+
+        constructor(name: string, artist: string, bpm: number, songData: Buffer, instrumentMap: Instruments.InstrumentFunction[], playedNoteMap: Buffer) {
             this.name = name;
             this.artist = artist;
             this.bpm = bpm;
             this.songData = songData;
             this.instrumentMap = instrumentMap;
+            this.playedNoteMap = playedNoteMap;
         }
     }
     export class MidiPlayer {
@@ -40,25 +50,25 @@ namespace MidiSongExtension {
                     if (MidiPlayer.lastNoteChange + MidiPlayer.msPer16th <= game.runtime()) {
                         if (MidiPlayer.restingTime >= MidiPlayer.msPer16th) {
                             MidiPlayer.restingTime -= MidiPlayer.msPer16th;
-                        }
-                    } else {
-                        flipParityBit();
-                        while (MidiPlayer.nextNoteData[0] == MidiPlayer.currentParityBit) {
-                            if (MidiPlayer.nextNoteData[1] != 0) {
-                                Instruments.PlayNote(
-                                    MidiPlayer.activeSongList[0].instrumentMap[MidiPlayer.nextNoteData[4] - 1],
-                                    DataParsing.noteIndexToFrequency(MidiPlayer.nextNoteData[2]), 
-                                    (MidiPlayer.nextNoteData[3] + 1) * MidiPlayer.msPer16th);
-                            } else {
-                                MidiPlayer.restingTime = (MidiPlayer.nextNoteData[2] - 1) * MidiPlayer.msPer16th;
+                        } else {
+                            flipParityBit();
+                            while (MidiPlayer.nextNoteData[0] == MidiPlayer.currentParityBit) {
+                                if (MidiPlayer.nextNoteData[1] != 0) {
+                                    Instruments.PlayNote(
+                                        MidiPlayer.activeSongList[0].instrumentMap[MidiPlayer.nextNoteData[4] - 1],
+                                        DataParsing.noteIndexToFrequency(MidiPlayer.activeSongList[0].playedNoteMap.getNumber(NumberFormat.UInt8BE, MidiPlayer.nextNoteData[2])),
+                                        (MidiPlayer.nextNoteData[3] + 1) * MidiPlayer.msPer16th);
+                                } else {
+                                    MidiPlayer.restingTime = (MidiPlayer.nextNoteData[2] - 1) * MidiPlayer.msPer16th;
+                                }
+                                MidiPlayer.bufferOffsetIndex++;
+                                MidiPlayer.lastNoteData = MidiPlayer.nextNoteData;
+                                MidiPlayer.nextNoteData = MidiPlayer.GetNextNote();
                             }
-                            MidiPlayer.bufferOffsetIndex++;
-                            MidiPlayer.lastNoteData = MidiPlayer.nextNoteData;
-                            MidiPlayer.nextNoteData = MidiPlayer.GetNextNote();
-                        }
 
-                    }
-                    MidiPlayer.lastNoteChange += MidiPlayer.msPer16th;
+                        }
+                        MidiPlayer.lastNoteChange += MidiPlayer.msPer16th;
+                    } 
                 }
             })
         }
@@ -383,8 +393,9 @@ namespace MidiSongExtension.Instruments {
             saws.pop().stop();
         }
         // reduce time since still caused issues
-        //length -= 2500 / 46; //#FIXME magic number
-        length /= 2; // equivalent to above?
+        //length -= 2500 / 46; 
+        //length /= 1.5; // equivalent to above roughly?
+        length -= MidiPlayer.msPer16th / 2; //#FIXME odd workaround to saw waves not behaving properly
         let melodA = new music.Melody("~2 @10,1,255,40 !" + freq + "," + length);
         let melodB = new music.Melody("~2 @10,1,255,40 !" + (freq / 2) + "," + length);
 
