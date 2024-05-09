@@ -1,10 +1,12 @@
 namespace MidiSongExtension {
     export class MidiSong {
+        public name: string;
         public bpm: number;
         public songData: Buffer;
         public instrumentMap: Instruments.InstrumentFunction[];
 
-        constructor(bpm: number, songData: Buffer, instrumentMap: Instruments.InstrumentFunction[]) {
+        constructor(name: string, bpm: number, songData: Buffer, instrumentMap: Instruments.InstrumentFunction[]) {
+            this.name = name;
             this.bpm = bpm;
             this.songData = songData;
             this.instrumentMap = instrumentMap;
@@ -64,11 +66,12 @@ namespace MidiSongExtension {
         }
 
         public static Start(toPlay: MidiSong): void {
+            game.splash("playing " + toPlay.name);
             if (!MidiPlayer.initialized) {
                 MidiPlayer.Initialize();
             }
-            MidiPlayer.nextNoteData = MidiPlayer.GetNextNote();
             MidiPlayer.playing = [toPlay];
+            MidiPlayer.nextNoteData = MidiPlayer.GetNextNote();
             MidiPlayer.msPer16th = DataParsing.BPMtoMSp16th(toPlay.bpm);
         }
 
