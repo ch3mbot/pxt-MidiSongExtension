@@ -42,7 +42,7 @@ namespace MidiSongExtension {
                         while (MidiPlayer.nextNoteData[0] == MidiPlayer.currentParityBit) {
                             if (MidiPlayer.nextNoteData[1] != 0) {
                                 Instruments.PlayNote(
-                                    MidiPlayer.playing[0].instrumentMap[MidiPlayer.nextNoteData[4]],
+                                    MidiPlayer.playing[0].instrumentMap[MidiPlayer.nextNoteData[4] - 1],
                                     DataParsing.noteIndexToFrequency(MidiPlayer.nextNoteData[2]), 
                                     (MidiPlayer.nextNoteData[3] + 1) * MidiPlayer.msPer16th);
                             } else {
@@ -233,9 +233,14 @@ namespace MidiSongExtension.Instruments {
         instrumentFunction(pitch, length);
     }
 
+    // blank instrument to ignore a channel
+    export const noSound: InstrumentFunction = (freq, length, vol = 255) => {
+
+    }
+
     // credit for piano to ThatUruguayanGuy
     // from https://forum.makecode.com/t/various-instruments-recreated-in-makecode-arcade/24040
-    export const acousticgrand: InstrumentFunction = (freq, length, vol = 255) => {
+    export const acousticGrand: InstrumentFunction = (freq, length, vol = 255) => {
         music.play(music.createSoundEffect(
             WaveShape.Sine,
             freq,
