@@ -37,6 +37,9 @@ namespace MidiSongExtension {
         public static nextNoteData: number[];
         public static lastNoteData: number[]; // #FIXME why track last note?
 
+        public static debugSprite: Sprite;
+        public static usingDebugSprite: boolean = false;
+
         // when a chunk indicator is hit process it and set other time variables.
         private static ProcessChunkIndicator() {
             if (MidiPlayer.nextNoteData[0] != 1)
@@ -53,6 +56,7 @@ namespace MidiSongExtension {
 
         // queue up found notes until a new chunk indicator is hit.
         private static QueueUntilNextChunk() {
+            let notesQueued = 0;
             while (MidiPlayer.nextNoteData[0] != 1) {
                 // get and process note info
                 let runtime = game.runtime();
@@ -74,7 +78,16 @@ namespace MidiSongExtension {
                 MidiPlayer.bufferOffsetIndex++;
                 MidiPlayer.lastNoteData = MidiPlayer.nextNoteData;
                 MidiPlayer.nextNoteData = MidiPlayer.GetNextNote();
+
+                notesQueued++;
             }
+            if(MidiPlayer.usingDebugSprite) 
+                MidiPlayer.debugSprite.sayText("queued " + notesQueued + " notes", MidiPlayer.timeBuffer / 2);
+        }
+
+        public static SetupDebugSprite(debugSprite: Sprite) {
+            MidiPlayer.debugSprite = debugSprite;
+            MidiPlayer.usingDebugSprite = true;
         }
 
         public static Start(song: MidiSong, resolution: number, timeBuffer: number): void {
