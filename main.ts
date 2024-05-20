@@ -2,96 +2,121 @@ namespace MidiSongExtension {
     export class MidiSong {
         public name: string;
         public artist: string;
-        public bpm: number;
+        public resolution: number;
 
-        // auto-generated song data buffer, data format explained in MidiSongExtension.DataParsing.getNoteFromBufferV2.
+        // auto-generated song data buffer, data format explained in MidiSongExtension.DataParsing.getNoteFromBufferV3.
         public songData: Buffer;
 
         // array of instrument functions. midi channel - 1 is the instrument chosen
         // ex: midi channel 9 uses instrumentMap[8].
         public instrumentMap: Instruments.InstrumentFunction[];
 
-        // a seperate array of the notes this midi uses. auto-generated.
-        // needed since there are 109 possible notes but note pitch index is stored in 3 bits
-        public playedNoteMap: Buffer; 
+        // array of instrument volume overrides. 0-255. undefined for default volume.
+        public volumeOverrideMap: (number | undefined)[];
 
-        constructor(name: string, artist: string, bpm: number, songData: Buffer, instrumentMap: Instruments.InstrumentFunction[], playedNoteMap: Buffer) {
+        constructor(name: string, artist: string, resolution: number, songData: Buffer, instrumentMap: Instruments.InstrumentFunction[], volumeOverrideMap: (number | undefined)[]) {
             this.name = name;
             this.artist = artist;
-            this.bpm = bpm;
+            this.resolution = resolution;
             this.songData = songData;
             this.instrumentMap = instrumentMap;
-            this.playedNoteMap = playedNoteMap;
+            this.volumeOverrideMap = volumeOverrideMap;
         }
     }
     export class MidiPlayer {
-        public static activeSongList: MidiSong[]; // #TODO add multiple song support?
-        public static initialized: boolean = false;
+        public static activeSong: MidiSong;
         public static playing: boolean = false;
 
-        // song playing variables
-        public static lastNoteChange = 0;
-        public static msPer16th = 0; 
-        public static restingTime = 0; // 16th rests to wait before playing again 
-        public static bufferOffsetIndex = 0; // where is the current song in the buffer
-        public static currentParityBit = 0; // same parity bit notes played at same time
+        public static resolution: number; // the number of ms every midi event is rounded to (start, duration, etc)
+        public static timePerChunk: number; // how many ms is each chunk
+        public static timeBuffer: number; // ms things are queued ahead of time
 
-        public static  nextNoteData: number[];
-        public static  lastNoteData: number[];
+        public static chunkTime = 0; // time the current chunk started
+        public static bufferOffsetIndex = 0; // where in the buffer is the song. every note is 4 nibbles.
 
-        // #TODO switch to system that doesnt count total time? for playing song at given time
-        private static Initialize(): void {
-            let flipParityBit = function() {
-                MidiPlayer.currentParityBit = 1 - MidiPlayer.currentParityBit;
-            };
-            this.initialized = true;
-            game.onUpdate(function () {
-                if (MidiPlayer.playing) {
-                    if (MidiPlayer.lastNoteChange + MidiPlayer.msPer16th <= game.runtime()) {
-                        if (MidiPlayer.restingTime >= MidiPlayer.msPer16th) {
-                            MidiPlayer.restingTime -= MidiPlayer.msPer16th;
-                        } else {
-                            flipParityBit();
-                            while (MidiPlayer.nextNoteData[0] == MidiPlayer.currentParityBit) {
-                                if (MidiPlayer.nextNoteData[1] != 0) {
-                                    Instruments.PlayNote(
-                                        MidiPlayer.activeSongList[0].instrumentMap[MidiPlayer.nextNoteData[4] - 1],
-                                        DataParsing.noteIndexToFrequency(MidiPlayer.activeSongList[0].playedNoteMap.getNumber(NumberFormat.UInt8BE, MidiPlayer.nextNoteData[2])),
-                                        (MidiPlayer.nextNoteData[3] + 1) * MidiPlayer.msPer16th);
-                                } else {
-                                    MidiPlayer.restingTime = (MidiPlayer.nextNoteData[2] - 1) * MidiPlayer.msPer16th;
-                                }
-                                MidiPlayer.bufferOffsetIndex++;
-                                MidiPlayer.lastNoteData = MidiPlayer.nextNoteData;
-                                MidiPlayer.nextNoteData = MidiPlayer.GetNextNote();
-                            }
+        public static nextNoteData: number[];
+        public static lastNoteData: number[]; // #FIXME why track last note?
 
-                        }
-                        MidiPlayer.lastNoteChange += MidiPlayer.msPer16th;
-                    } 
+        // when a chunk indicator is hit process it and set other time variables.
+        private static ProcessChunkIndicator() {
+            if (MidiPlayer.nextNoteData[0] != 1)
+                game.splash("cannot process non chunk");
+
+            // add to chunk time
+            MidiPlayer.chunkTime += MidiPlayer.timePerChunk;
+
+            // advance
+            MidiPlayer.bufferOffsetIndex++;
+            MidiPlayer.lastNoteData = MidiPlayer.nextNoteData;
+            MidiPlayer.nextNoteData = MidiPlayer.GetNextNote();
+        }
+
+        // queue up found notes until a new chunk indicator is hit.
+        private static QueueUntilNextChunk() {
+            while (MidiPlayer.nextNoteData[0] != 1) {
+                // get and process note info
+                let runtime = game.runtime();
+                let trueStartMs = MidiPlayer.nextNoteData[1] * MidiPlayer.resolution + MidiPlayer.chunkTime - runtime;
+                let duration = MidiPlayer.nextNoteData[2] * MidiPlayer.resolution;
+                let pitch = DataParsing.NoteIndexToFrequency(MidiPlayer.nextNoteData[3]);
+                let channel = MidiPlayer.nextNoteData[4];
+                
+                // call appropriate instrument function
+                Instruments.PlayNote(
+                    MidiPlayer.activeSong.instrumentMap[channel],
+                    pitch,
+                    trueStartMs,
+                    duration,
+                    MidiPlayer.activeSong.volumeOverrideMap[channel]
+                );
+
+                // advance
+                MidiPlayer.bufferOffsetIndex++;
+                MidiPlayer.lastNoteData = MidiPlayer.nextNoteData;
+                MidiPlayer.nextNoteData = MidiPlayer.GetNextNote();
+            }
+        }
+
+        public static Start(song: MidiSong, resolution: number, timeBuffer: number): void {
+            // get the song
+            MidiPlayer.activeSong = song;
+            MidiPlayer.playing = true;
+        
+            // get important song playing data
+            MidiPlayer.resolution = resolution;
+            MidiPlayer.timePerChunk = 2048 * MidiPlayer.resolution;
+            MidiPlayer.timeBuffer = timeBuffer;
+
+            // reset chunkTime and bufferIndex
+            MidiPlayer.chunkTime = 0;
+            MidiPlayer.bufferOffsetIndex = 0;
+
+            // reset last note? needed? #FIXME
+            MidiPlayer.lastNoteData = [];
+
+            // get first noteBuff
+            MidiPlayer.nextNoteData = MidiPlayer.GetNextNote();
+
+            // queue first chunk
+            MidiPlayer.QueueUntilNextChunk();
+
+            // twice per timeBuffer check if next block of notes should be queued.
+            game.onUpdateInterval(MidiPlayer.timeBuffer / 2, function () {
+                // if within buffer, advance chunk, and queue up next chunk of notes
+                if (MidiPlayer.chunkTime + MidiPlayer.timePerChunk - game.runtime() < MidiPlayer.timeBuffer) {
+                    MidiPlayer.ProcessChunkIndicator();
+                    MidiPlayer.QueueUntilNextChunk();
                 }
-            })
+            });
+        }
+
+        // #FIXME figure out how to stop midi song only.
+        public static Stop(): void {
+            music.stopAllSounds();
         }
 
         public static GetNextNote(): number[] {
-            return DataParsing.getNoteFromBufferV2(MidiPlayer.activeSongList[0].songData, MidiPlayer.bufferOffsetIndex);
-        }
-
-        public static Start(toPlay: MidiSong): void {
-            game.splash("playing " + toPlay.name, "by " + toPlay.artist);
-            if (!MidiPlayer.initialized) {
-                MidiPlayer.Initialize();
-            }
-            MidiPlayer.activeSongList = [toPlay];
-            MidiPlayer.nextNoteData = MidiPlayer.GetNextNote();
-            MidiPlayer.msPer16th = DataParsing.BPMtoMSp16th(toPlay.bpm);
-            MidiPlayer.playing = true;
-        }
-
-        public static Stop(): void {
-            MidiPlayer.activeSongList = [];
-            MidiPlayer.playing = false;
-            MidiPlayer.msPer16th = 0;
+            return DataParsing.GetNoteFromBuffer(MidiPlayer.activeSong.songData, MidiPlayer.bufferOffsetIndex);
         }
     }
 }
@@ -211,45 +236,50 @@ namespace MidiSongExtension.DataParsing {
     };
 
     // from midi index to actual pitch
-    export function noteIndexToFrequency(noteIndex: number): number {
+    export function NoteIndexToFrequency(noteIndex: number): number {
         return midiNoteFrequencyMap[noteIndex];
     }
 
-    // get amount of ms per 16th note based on bpm
-    export function BPMtoMSp16th(bpm: number) {
-        return 1000 * 16 / bpm;
-    }
+    export function GetNoteFromBuffer(fullMidiBufferV3: Buffer, noteIndex: number): number[] {
+        //buffer is split into two seperate 16 bit uints, since typescript 32 bit numbers behaved poorly
+        let noteBuffA = fullMidiBufferV3.getNumber(NumberFormat.UInt16BE, noteIndex * 4);
+        let noteBuffB = fullMidiBufferV3.getNumber(NumberFormat.UInt16BE, (noteIndex * 4) + 2);
 
-    // #TODO add one more bit to channel, remove one bit from playTime?
-    // get a note from the buffer. format:
-    // bit 1 is parity. notes played at the same time have the same parity
-    // bit 2 is rest. 1 for rest, 0 for note.
-    // if b2==1, next 14 bits are rest time
-    // if b2==0, next 6 bits are pitch, then 5 bits playTime, then 3 bits channel
-    export function getNoteFromBufferV2(fullMidiBuffer: Buffer, noteIndex: number): number[] {
-        let noteBuff = fullMidiBuffer.getNumber(NumberFormat.UInt16BE, noteIndex * 2);
-        let parityBit = noteBuff >> 15;
-        let restBit = (noteBuff >> 14) & 0x01;
+        // 1 bit chunk
+        // 11 bits relative start
+        // 4 bits channel
+        let chunkBit = (noteBuffA >> 15); // 1        
+        let relativeStartMs = (noteBuffA & 0x7FF0) >> 4; // 11 0111111111110000
+        let channel = noteBuffA & 0xF; // 4 000000000000111
 
-        if (restBit == 0) {
-            let restTime = noteBuff & 0x3FFF;
-            return [parityBit, restBit, restTime + 1];
-        }
-        let pitchIndex = (noteBuff >> 8) & 0x3F
-        let playTime = ((noteBuff >> 3) & 0x1F) + 1;
-        let channel = noteBuff & 0x7;
-        return [parityBit, restBit, pitchIndex, playTime, channel];
+        // 9 bits duration
+        // 7 bits pitch
+        let durationMs = (noteBuffB & 0xFF80) >> 7;; // 9  1111111110000000
+        let pitch = noteBuffB & 0x7F; // 7 0000000001111111
+
+        return [chunkBit, relativeStartMs, durationMs, pitch, channel];
     }
 }
 
 // a few instruments to play
 namespace MidiSongExtension.Instruments {
     // generic instrument function
-    export type InstrumentFunction = (pitch: number, length: number, vol?: number) => void; 
+    export type InstrumentFunction = (frequency: number, startTime: number, duration: number, volume?: number) => void;
+
+    // generate instrument from a table of pitch:amplitude pairs
+    function GenerateSineWaveInstrument(waveTable: number[][], baseFreqIndex: number, loudestIndex: number, releaseOverlap: boolean, durationOffset: number, defaultVolume: number): InstrumentFunction {
+        return (frequency: number, startTime: number, duration: number, volume?: number) => {
+            if (volume == undefined)
+                volume = defaultVolume;
+            for (let waveData of waveTable) {
+                quasiParsePlay("~3, @1,1,255,1 !" + frequency * waveData[0] / waveTable[baseFreqIndex][0], startTime, duration + durationOffset, volume * DBtoAmp(waveData[1] - waveTable[loudestIndex][1]), releaseOverlap);
+            }
+        };
+    }
 
     // play a note given an instrument function, pitch (hz), and a length (ms)
-    export function PlayNote(instrumentFunction: InstrumentFunction, pitch: number, length: number): void {
-        instrumentFunction(pitch, length); //#FIXME vol parameter when not given gets set to 'undefined'
+    export function PlayNote(instrumentFunction: InstrumentFunction, pitch: number, startTime: number, duration: number, volume?: number): void {
+        instrumentFunction(pitch, startTime, duration, volume);
     }
 
     // formula to convert from decibels to amplitude
@@ -257,31 +287,150 @@ namespace MidiSongExtension.Instruments {
         return Math.pow(10, db / 20);
     }
 
-    // based on a sine wave table generate an instrument (additive synthesis) #TODO add ADSR envellope support?
-    // waveTable: number[][] where each element is a [frequency (hz), relative amplitude (db)] array. see acousticGuitar for example
-    export function GenerateSineWaveInstrument(waveDataTable: number[][], loudestIndex: number, baseFreqIndex: number, defaultVolume: number = 255, falloffVol: number = 0): InstrumentFunction {
-        return (freq, length, vol = defaultVolume) => {
-            if (vol === undefined)
-                vol = defaultVolume;
-            for (let waveData of waveDataTable) {
-                let modifiedFreq = (waveData[0] / waveDataTable[baseFreqIndex][0]) * freq;
-                let dbVol = DBtoAmp(waveData[1] - waveDataTable[loudestIndex][1]);
-                music.play(music.createSoundEffect(
-                    WaveShape.Sine,
-                    modifiedFreq,
-                    modifiedFreq,
-                    dbVol * (255 * vol / 255),
-                    falloffVol * dbVol * (255 * vol / 255),
-                    length,
-                    SoundExpressionEffect.None,
-                    InterpolationCurve.Linear
-                ), music.PlaybackMode.InBackground);
+    // add a note to an instrument buffer
+    export function addNote(sndInstr: Buffer, sndInstrPtr: number, ms: number, beg: number, end: number, soundWave: number, hz: number, volume: number, endHz: number) {
+        if (ms > 0) {
+            sndInstr.setNumber(NumberFormat.UInt8LE, sndInstrPtr, soundWave)
+            sndInstr.setNumber(NumberFormat.UInt8LE, sndInstrPtr + 1, 0)
+            sndInstr.setNumber(NumberFormat.UInt16LE, sndInstrPtr + 2, hz)
+            sndInstr.setNumber(NumberFormat.UInt16LE, sndInstrPtr + 4, ms)
+            sndInstr.setNumber(NumberFormat.UInt16LE, sndInstrPtr + 6, (beg * volume) >> 6)
+            sndInstr.setNumber(NumberFormat.UInt16LE, sndInstrPtr + 8, (end * volume) >> 6)
+            sndInstr.setNumber(NumberFormat.UInt16LE, sndInstrPtr + 10, endHz);
+            sndInstrPtr += BUFFER_SIZE;
+        }
+        sndInstr.setNumber(NumberFormat.UInt8LE, sndInstrPtr, 0) // terminate
+        return sndInstrPtr
+    }
+
+    const BUFFER_SIZE = 12;
+    export function quasiParsePlay(melodyStr: string, startTime: number, duration: number, volume: number, releaseOverlap: boolean) {
+        volume = Math.max(0, Math.min(255, (volume * music.volume()) >> 8));
+
+        // 1 - triangle, 3 - sine, etc.
+        let waveform = 0;
+
+        // endHz=startHz by default
+        let startHz = 0;
+        let endHz = 0;
+
+        // attack sustain decay release - ms,ms,vol,ms
+        let envA = 0;
+        let envD = 0;
+        let envS = 255;
+        let envR = 0;
+
+        let charIndex = 0;
+
+        let ms = 0; // ms of the tone? unsure
+
+        //check if char is digit
+        let isDigit: (character: string) => boolean = function (character: string): boolean {
+            return !isNaN(parseInt(character));
+        }
+
+        // parse the next number until not a number
+        let parseNextNumber: () => number = function (): number {
+            let numStr = "";
+            let isFloat = false;
+            while (charIndex < melodyStr.length && (isDigit(melodyStr.charAt(charIndex)) || melodyStr.charAt(charIndex) == ".")) {
+                isFloat = isFloat || (melodyStr.charAt(charIndex) == ".");
+                numStr += melodyStr.charAt(charIndex);
+                charIndex++;
+            }
+            if (isFloat)
+                return parseFloat(numStr);
+            return parseInt(numStr);
+        }
+
+        // get relevant data from fake melody string
+        while (charIndex < melodyStr.length) {
+            switch (melodyStr.charAt(charIndex)) {
+                case " ":
+                    charIndex++;
+                    break;
+                case "~":
+                    charIndex++;
+                    waveform = parseNextNumber();
+                    break;
+                case "@":
+                    charIndex++;
+                    envA = parseNextNumber();
+                    charIndex++;
+                    envD = parseNextNumber();
+                    charIndex++;
+                    envS = parseNextNumber();
+                    charIndex++;
+                    envR = parseNextNumber();
+                    break;
+                case "!":
+                    charIndex++;
+                    startHz = parseNextNumber();
+                    endHz = startHz;
+                    if (charIndex < melodyStr.length && melodyStr.charAt(charIndex) == ",") {
+                        charIndex++;
+                        ms = parseNextNumber();
+                    }
+                    if (charIndex < melodyStr.length && melodyStr.charAt(charIndex) == "^") {
+                        charIndex++;
+                        endHz = parseNextNumber();
+                    }
+                    break;
+                default:
+                    charIndex++;
+                    break;
             }
         }
+
+        // set up instruction buffer #FIXME why 5 * BUFFER_SIZE?
+        let sndInstr = control.createBuffer(5 * BUFFER_SIZE)
+        let sndInstrPtr = 0
+
+        const addForm = (formDuration: number, beg: number, end: number, msOff: number) => {
+            let freqStart = startHz;
+            let freqEnd = endHz;
+
+            const envelopeWidth = ms > 0 ? ms : duration * 125 + envR;
+            if (endHz != startHz && envelopeWidth != 0) {
+                const slope = (freqEnd - freqStart) / envelopeWidth;
+                freqStart = startHz + slope * msOff;
+                freqEnd = startHz + slope * (msOff + formDuration);
+            }
+            sndInstrPtr = addNote(sndInstr, sndInstrPtr, formDuration, beg, end, waveform, freqStart, volume, freqEnd);
+        }
+
+        let currMs = ms
+
+        // if ms not given, default to  duration provided?
+        if (currMs <= 0) {
+            //const beat = 125;
+            currMs = duration //* beat
+        }
+
+        // add the four waveforms. #FIXME some parts changed from melodyPlayer, may not behave correctly.
+        sndInstrPtr = 0; // what does this dp
+        addForm(envA, 0, 255, 0);
+        addForm(envD, 255, envS, envA);
+        if (releaseOverlap) {
+            addForm(currMs - (envA + envD), envS, envS, envD + envA)
+            addForm(envR, envS, 0, currMs)
+            //addForm(duration - (envA + envD), envS, envS, envD + envA); // dont add release? release plays during next note? #FIXME 
+            //addForm(envR, envS, 0, duration); // start this waveform at duration?
+        } else {
+            addForm(currMs - (envA + envD + envR), envS, envS, envD + envA);
+            addForm(envR, envS, 0, currMs - envR);
+            //addForm(duration - (envA + envD + envR), envS, envS, envD + envA);
+            //addForm(envR, envS, 0, duration - envR);
+        }
+
+
+        //game.splash("playing wave " + waveform, "at hz: " + startHz);
+        // actually play it
+        music.playInstructions(startTime, sndInstr.slice(0, sndInstrPtr))
     }
 
     // blank instrument to ignore a channel
-    export const noSound: InstrumentFunction = (freq, length, vol = 255) => {
+    export const NoSound: InstrumentFunction = (frequency, startTime, duration, volume) => {
 
     }
 
@@ -299,158 +448,56 @@ namespace MidiSongExtension.Instruments {
         [661, -56.7],
 
     ];
-    export const acousticGuitar: InstrumentFunction = GenerateSineWaveInstrument(guitarSoundWaveTable, 3, 2, 255, 1);
+    export const AcousticGuitar = GenerateSineWaveInstrument(guitarSoundWaveTable, 1, 3, false, -10, 255);
 
     // credit for piano to ThatUruguayanGuy
     // from https://forum.makecode.com/t/various-instruments-recreated-in-makecode-arcade/24040
-    export const acousticGrand: InstrumentFunction = (freq, length, vol = 255) => {
-        if(vol === undefined)
-            vol = 255;
-        music.play(music.createSoundEffect(
-            WaveShape.Sine,
-            freq,
-            freq,
-            255 * vol / 255,
-            0,
-            length,
-            SoundExpressionEffect.None,
-            InterpolationCurve.Linear
-        ), music.PlaybackMode.InBackground)
-        music.play(music.createSoundEffect(
-            WaveShape.Sine,
-            freq * 2,
-            freq * 2,
-            255 * vol / 255,
-            0,
-            length,
-            SoundExpressionEffect.None,
-            InterpolationCurve.Linear
-        ), music.PlaybackMode.InBackground)
-        music.play(music.createSoundEffect(
-            WaveShape.Sine,
-            freq * 3,
-            freq * 3,
-            227 * vol / 255,
-            0,
-            length,
-            SoundExpressionEffect.None,
-            InterpolationCurve.Linear
-        ), music.PlaybackMode.InBackground)
-        music.play(music.createSoundEffect(
-            WaveShape.Sine,
-            freq * 4,
-            freq * 4,
-            227 * vol / 255,
-            0,
-            length,
-            SoundExpressionEffect.None,
-            InterpolationCurve.Linear
-        ), music.PlaybackMode.InBackground)
-    }
+    let acousticGrandWaveTable = [
+        [1, 0],
+        [2, 0],
+        [3, -1.01],
+        [4, -1.01],
+    ]
+    export const AcousticGrandPiano = GenerateSineWaveInstrument(acousticGrandWaveTable, 0, 0, true, 0, 100);
 
     // credit for piano to ThatUruguayanGuy
     // from https://forum.makecode.com/t/various-instruments-recreated-in-makecode-arcade/24040
-    export const brightAcoustic: InstrumentFunction = (freq, length, vol = 255) => {
-        if (vol === undefined)
-            vol = 255;
-        music.play(music.createSoundEffect(
-            WaveShape.Sine,
-            freq,
-            freq,
-            255 * vol / 255,
-            0,
-            length,
-            SoundExpressionEffect.None,
-            InterpolationCurve.Linear
-        ), music.PlaybackMode.InBackground)
-        music.play(music.createSoundEffect(
-            WaveShape.Sine,
-            freq * 2,
-            freq * 2,
-            255 * vol / 255,
-            0,
-            length,
-            SoundExpressionEffect.None,
-            InterpolationCurve.Linear
-        ), music.PlaybackMode.InBackground)
-        music.play(music.createSoundEffect(
-            WaveShape.Sine,
-            freq * 3,
-            freq * 3,
-            227 * vol / 255,
-            0,
-            length,
-            SoundExpressionEffect.None,
-            InterpolationCurve.Linear
-        ), music.PlaybackMode.InBackground)
-        music.play(music.createSoundEffect(
-            WaveShape.Sine,
-            freq * 4,
-            freq * 4,
-            227 * vol / 255,
-            0,
-            length,
-            SoundExpressionEffect.None,
-            InterpolationCurve.Linear
-        ), music.PlaybackMode.InBackground)
-        music.play(music.createSoundEffect(
-            WaveShape.Sine,
-            freq * 5,
-            freq * 5,
-            205 * vol / 255,
-            0,
-            length,
-            SoundExpressionEffect.None,
-            InterpolationCurve.Linear
-        ), music.PlaybackMode.InBackground)
-        music.play(music.createSoundEffect(
-            WaveShape.Sine,
-            freq * 6,
-            freq * 6,
-            205 * vol / 255,
-            0,
-            length,
-            SoundExpressionEffect.None,
-            InterpolationCurve.Linear
-        ), music.PlaybackMode.InBackground)
+    let brightAcousticWaveTable = [
+        [1, 0],
+        [2, 0],
+        [3, -1.01],
+        [4, -1.01],
+        [5, -1.89],
+        [6, -1.89],
+    ]
+    export const BrightAcousticPiano = GenerateSineWaveInstrument(brightAcousticWaveTable, 0, 0, false, -6, 80);
+
+    // simple bass with 2 saw waves
+    export const SawBass: InstrumentFunction = (frequency, startTime, duration, volume) => {
+        //let idkBuf = doBuffer(duration, 1.0, 1.0, 2, frequency, 255, frequency);
+        //music.playInstructions(startTime, idkBuf);
+        //let melodAdk = new music.Melody("~2 @10,1,255,40 !" + frequency + "," + duration);
+        //dunno(melodAdk, startTime);
+        //quasiParsePlay("~2 @10,1,255,40 !" + frequency, startTime, duration - 30, volume, false);
+        if(volume == undefined)
+            volume = 80;
+        duration -= 0;
+        quasiParsePlay("~2 @10,1,255,40 !" + frequency + "," + duration, startTime, duration, volume, false);
+        quasiParsePlay("~2 @10,1,255,40 !" + (frequency / 2) + "," + duration, startTime, duration, volume, false);
+        //game.splash("sawing at: " + frequency, + "for " + duration);
     }
 
-    // simple but somewhat poor base
-    export const badBass: InstrumentFunction = (freq, length, vol = 100) => {
-        if (vol === undefined)
-            vol = 100;
-        let melod = new music.Melody("~15 @1,0,90,1 !200,90^1");
-        melod.play(vol);
+    // simple but somewhat poor bass drum made with sine wave 
+    export const BassDrum: InstrumentFunction = (frequency, startTime, duration, volume) => {
+        if (volume == undefined)
+            volume = 100;
+        quasiParsePlay("~15 @1,1,90,1 !200,90^1", startTime, duration - 25, volume, false);
     }
 
-    // pretty solid high-hat
-    export const hiHat: InstrumentFunction = (freq, length, vol = 100) => {
-        if (vol === undefined)
-            vol = 100;
-        let melod = new music.Melody("@0,50,0,0 ~5 " + "c1-99999 ");
-        melod.play(vol);
-    }
-
-    // manual stopping since caused issues without
-    let saws: music.Melody[] = [];
-    export const sawMaybe: InstrumentFunction = (freq, length, vol = 80) => {
-        if (vol === undefined)
-            vol = 80;
-        while (saws.length > 0) {
-            saws.pop().stop();
-        }
-        // reduce time since still caused issues
-        //length -= 2500 / 46; 
-        //length /= 1.5; // equivalent to above roughly?
-        length -= MidiPlayer.msPer16th / 2; //#FIXME odd workaround to saw waves not behaving properly
-        let melodA = new music.Melody("~2 @10,1,255,40 !" + freq + "," + length);
-        let melodB = new music.Melody("~2 @10,1,255,40 !" + (freq / 2) + "," + length);
-
-        // alter volumes? #TODO
-        melodA.play(vol);
-        melodB.play(vol);
-
-        saws.push(melodA);
-        saws.push(melodB);
+    // pretty solid hi-hat made from noise
+    export const HiHat: InstrumentFunction = (frequency, startTime, duration, volume) => {
+        if (volume == undefined)
+            volume = 100;
+        quasiParsePlay("~5 @0,50,0,0 !37", startTime, duration, volume, false);
     }
 }
