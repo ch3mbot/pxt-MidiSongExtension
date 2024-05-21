@@ -106,7 +106,7 @@ namespace MidiSongExtension {
             });
         }
 
-        public static Start(song: MidiSong, resolution: number): void {
+        public static Start(song: MidiSong): void {
             // get the song
             MidiPlayer.activeSong = song;
             MidiPlayer.playing = true;
@@ -116,7 +116,7 @@ namespace MidiSongExtension {
             }
         
             // get important song playing data
-            MidiPlayer.resolution = resolution;
+            MidiPlayer.resolution = song.resolution;
             MidiPlayer.timePerChunk = 2048 * MidiPlayer.resolution;
 
             // reset chunkTime and bufferIndex
