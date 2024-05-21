@@ -26,6 +26,7 @@ namespace MidiSongExtension {
     export class MidiPlayer {
         public static activeSong: MidiSong;
         public static playing: boolean = false;
+        public static initialized: boolean = false;
 
         public static resolution: number; // the number of ms every midi event is rounded to (start, duration, etc)
         public static timePerChunk: number; // how many ms is each chunk
@@ -42,8 +43,10 @@ namespace MidiSongExtension {
 
         // when a chunk indicator is hit process it and set other time variables.
         private static ProcessChunkIndicator() {
-            if (MidiPlayer.nextNoteData[0] != 1)
-                game.splash("cannot process non chunk");
+            if (MidiPlayer.nextNoteData[0] != 1) {
+                MidiPlayer.playing = false;
+                return;
+            }
 
             // add to chunk time
             MidiPlayer.chunkTime += MidiPlayer.timePerChunk;
@@ -57,7 +60,7 @@ namespace MidiSongExtension {
         // queue up found notes until a new chunk indicator is hit.
         private static QueueUntilNextChunk() {
             let notesQueued = 0;
-            while (MidiPlayer.nextNoteData[0] != 1) {
+            while (MidiPlayer.bufferOffsetIndex < MidiPlayer.activeSong.songData.length && MidiPlayer.nextNoteData[0] == 0) {
                 // get and process note info
                 let runtime = game.runtime();
                 let trueStartMs = MidiPlayer.nextNoteData[1] * MidiPlayer.resolution + MidiPlayer.chunkTime - runtime;
@@ -90,15 +93,31 @@ namespace MidiSongExtension {
             MidiPlayer.usingDebugSprite = true;
         }
 
-        public static Start(song: MidiSong, resolution: number, timeBuffer: number): void {
+        private static Initialize() {
+            MidiPlayer.timeBuffer = 2000;
+            
+            // twice per timeBuffer check if next block of notes should be queued.
+            game.onUpdateInterval(MidiPlayer.timeBuffer / 2, function () {
+                // if within buffer, advance chunk, and queue up next chunk of notes
+                if (MidiPlayer.playing && MidiPlayer.chunkTime + MidiPlayer.timePerChunk - game.runtime() < MidiPlayer.timeBuffer && MidiPlayer.nextNoteData != undefined) {
+                    MidiPlayer.ProcessChunkIndicator();
+                    MidiPlayer.QueueUntilNextChunk();
+                }
+            });
+        }
+
+        public static Start(song: MidiSong, resolution: number): void {
             // get the song
             MidiPlayer.activeSong = song;
             MidiPlayer.playing = true;
+
+            if(!MidiPlayer.initialized) {
+                MidiPlayer.Initialize();
+            }
         
             // get important song playing data
             MidiPlayer.resolution = resolution;
             MidiPlayer.timePerChunk = 2048 * MidiPlayer.resolution;
-            MidiPlayer.timeBuffer = timeBuffer;
 
             // reset chunkTime and bufferIndex
             MidiPlayer.chunkTime = 0;
@@ -113,14 +132,6 @@ namespace MidiSongExtension {
             // queue first chunk
             MidiPlayer.QueueUntilNextChunk();
 
-            // twice per timeBuffer check if next block of notes should be queued.
-            game.onUpdateInterval(MidiPlayer.timeBuffer / 2, function () {
-                // if within buffer, advance chunk, and queue up next chunk of notes
-                if (MidiPlayer.chunkTime + MidiPlayer.timePerChunk - game.runtime() < MidiPlayer.timeBuffer) {
-                    MidiPlayer.ProcessChunkIndicator();
-                    MidiPlayer.QueueUntilNextChunk();
-                }
-            });
         }
 
         // #FIXME figure out how to stop midi song only.
