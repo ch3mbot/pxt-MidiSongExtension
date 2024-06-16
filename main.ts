@@ -1,3 +1,4 @@
+// #TODO fix capitalization conventions. PascalCase namespaces, classes, types, camelCase functions, UPPER_CASE? constants
 namespace MidiSongExtension {
     export class MidiSong {
         public name: string;
@@ -14,7 +15,14 @@ namespace MidiSongExtension {
         // array of instrument volume overrides. 0-255. undefined for default volume.
         public volumeOverrideMap: (number | undefined)[];
 
-        constructor(name: string, artist: string, resolution: number, songData: Buffer, instrumentMap: Instruments.InstrumentFunction[], volumeOverrideMap: (number | undefined)[]) {
+        constructor(
+            name: string, 
+            artist: string, 
+            resolution: number, 
+            songData: Buffer, 
+            instrumentMap: Instruments.InstrumentFunction[], 
+            volumeOverrideMap: (number | undefined)[]
+        ) {
             this.name = name;
             this.artist = artist;
             this.resolution = resolution;
@@ -60,7 +68,10 @@ namespace MidiSongExtension {
         // queue up found notes until a new chunk indicator is hit.
         private static QueueUntilNextChunk() {
             let notesQueued = 0;
-            while (MidiPlayer.bufferOffsetIndex < MidiPlayer.activeSong.songData.length && MidiPlayer.nextNoteData[0] == 0) {
+            while (
+                MidiPlayer.bufferOffsetIndex < MidiPlayer.activeSong.songData.length && 
+                MidiPlayer.nextNoteData[0] == 0
+            ) {
                 // get and process note info
                 let runtime = game.runtime();
                 let trueStartMs = MidiPlayer.nextNoteData[1] * MidiPlayer.resolution + MidiPlayer.chunkTime - runtime;
@@ -99,7 +110,11 @@ namespace MidiSongExtension {
             // twice per timeBuffer check if next block of notes should be queued.
             game.onUpdateInterval(MidiPlayer.timeBuffer / 2, function () {
                 // if within buffer, advance chunk, and queue up next chunk of notes
-                if (MidiPlayer.playing && MidiPlayer.chunkTime + MidiPlayer.timePerChunk - game.runtime() < MidiPlayer.timeBuffer && MidiPlayer.nextNoteData != undefined) {
+                if (
+                    MidiPlayer.playing && 
+                    MidiPlayer.chunkTime + MidiPlayer.timePerChunk - game.runtime() < MidiPlayer.timeBuffer && 
+                    MidiPlayer.nextNoteData != undefined
+                ) {
                     MidiPlayer.ProcessChunkIndicator();
                     MidiPlayer.QueueUntilNextChunk();
                 }
@@ -290,18 +305,81 @@ namespace MidiSongExtension.Instruments {
     // generic instrument function
     export type InstrumentFunction = (frequency: number, startTime: number, duration: number, volume?: number) => void;
 
+    // create song using auto-generated output wavetable from seperate
+    // #TODO create custom "advanced instrument data" class with wavetable and other parameters
+    // #FIXME nonLinearFalloff not used, defaultVolume not used, ADSR not used, duration not considered
+    // ^ general problem with single note events like guitar string being plucked, notes are not held.
+    export function AdvancedGenSynthInstrument(
+        waveTableAccessFunc: (i: number) => number[][][],   // dereferencing null/undefined value fix #TODO find out/explain how this works
+        totalWavesFunc: () => number,                       // another access workaround
+        baseFrequency: number,      // frequency of the note the audio is sampled from
+        baseVolume: number,         // amplitude of the loudest wave (to scale others) #FIXME probably amp but could be dB?
+        highPass: number,           // maximum frequency, adjust to taste
+        minLength: number,          // minimum wave length (in ticks), adjust to taste
+        minVolume: number,          // minimum wave volume, adjust to taste (setting this to not 0 usually works terribly)
+        releaseOverlap: boolean,    // does the release portion of this note overlap with the next note, or is it included in the duration
+        defaultVolume: number,      // if no volume parameter is given, play note at this volume (0-255)
+        nonLinearFalloff: boolean,  // is the decay portion linear? #FIXME add custom steepness 
+        maxWaveTime: number,       // how long can one wave be? waves get cut off at this point, instead of not being played.
+    ): InstrumentFunction {
+        console.log("Advanced generative synthesis instrument generated.");
+        //let totalWavesFunc = waveTable.length;
+        //let waveTableAccessFunc: (i: number) => number[][][] = i => return 
+        return (frequency: number, startTime: number, duration: number, volume?: number) => {
+            if (volume == undefined)
+                volume = defaultVolume;
+            let validPlayed = 0; // #FIXME was for debugging total number of waves played out of whole, still needed?
+            for (let qrt = 0; qrt < totalWavesFunc(); qrt++) {
+                let startTick: number = waveTableAccessFunc(qrt)[0][0][0];
+                let endTick: number = waveTableAccessFunc(qrt)[0][0][1];
+                let theData = waveTableAccessFunc(qrt)[1];
+                if (theData.length < minLength || theData[0][0] > highPass || theData[0][1] < minVolume)
+                    continue;
+                validPlayed++;
+
+                let waveStartTimeMs = startTime + startTick * 1000; 
+                music.playInstructions(waveStartTimeMs, playCustomWave(frequency / baseFrequency, startTick, endTick, i => theData[i], baseVolume, maxWaveTime));
+            }
+
+            console.log("played " + validPlayed + "/" + totalWavesFunc())
+        };
+    }
+
     // generate instrument from a table of pitch:amplitude pairs
-    function GenerateSineWaveInstrument(waveTable: number[][], baseFreqIndex: number, loudestIndex: number, releaseOverlap: boolean, durationOffset: number, defaultVolume: number, nonLinearFalloff: boolean): InstrumentFunction {
+    export function GenerateSineWaveInstrument(
+        waveTable: number[][], 
+        baseFreqIndex: number, 
+        loudestIndex: number, 
+        releaseOverlap: boolean, 
+        durationOffset: number, 
+        defaultVolume: number, 
+        nonLinearFalloff: boolean
+    ): InstrumentFunction {
+        console.log("Sine wave generative synthesis instrument generated.");
         return (frequency: number, startTime: number, duration: number, volume?: number) => {
             if (volume == undefined)
                 volume = defaultVolume;
             for (let waveData of waveTable) {
-                quasiParsePlay("~3, @1,1,255,1 !" + frequency * waveData[0] / waveTable[baseFreqIndex][0], startTime, duration + durationOffset, volume * DBtoAmp(waveData[1] - waveTable[loudestIndex][1]), releaseOverlap, nonLinearFalloff);
+                quasiParsePlay(
+                    "~3, @1,1,255,1 !" + frequency * waveData[0] / waveTable[baseFreqIndex][0], 
+                    startTime, 
+                    duration + durationOffset, 
+                    volume * DBtoAmp(waveData[1] - waveTable[loudestIndex][1]), 
+                    releaseOverlap, 
+                    nonLinearFalloff
+                );
             }
         };
     }
 
-    function GenerateSineWaveInstrumentAdvanced(waveTable: number[][], baseFreqIndex: number, loudestIndex: number, releaseOverlap: true, defaultVolume: number, minDuration: number): InstrumentFunction {
+    function GenerateSineWaveInstrumentAdvanced(
+        waveTable: number[][], 
+        baseFreqIndex: number, 
+        loudestIndex: number, 
+        releaseOverlap: true, 
+        defaultVolume: number, 
+        minDuration: number
+    ): InstrumentFunction {
         return (frequency: number, startTime: number, duration: number, volume?: number) => {
             if (volume == undefined)
                 volume = defaultVolume;
@@ -316,7 +394,13 @@ namespace MidiSongExtension.Instruments {
     }
 
     // play a note given an instrument function, pitch (hz), and a length (ms)
-    export function PlayNote(instrumentFunction: InstrumentFunction, pitch: number, startTime: number, duration: number, volume?: number): void {
+    export function PlayNote(
+        instrumentFunction: InstrumentFunction, 
+        pitch: number, 
+        startTime: number, 
+        duration: number, 
+        volume?: number
+    ): void {
         instrumentFunction(pitch, startTime, duration, volume);
     }
 
@@ -325,8 +409,65 @@ namespace MidiSongExtension.Instruments {
         return Math.pow(10, db / 20);
     }
 
+    // one frequency-volume sine wave step
+    interface WaveStep {
+        frequency: number;
+        volume: number;
+    }
+
+    // play a custom wave pitched up or down at a certain "tick"
+    // #FIXME explain why getDataInfo is passed like that
+    function playCustomWave(
+        freqMult: number, 
+        startTick: number, 
+        endTick: number, 
+        getDataInfo: (i: number) => number[], 
+        baseVolume: number,
+        maxWaveTime: number,
+    ) {
+        let getFrequencyAt: (i: number) => number = i => getDataInfo(i)[0]
+        let getVolumeAt: (i: number) => number = i => Math.min(255, 255 * getDataInfo(i)[1] / (baseVolume))
+
+        const steps: WaveStep[] = [];
+        let durationTicks = Math.round((endTick - startTick) * 100);
+        for (let i = 0; i < durationTicks + 1; i++) {
+            const newStep = {
+                frequency: getFrequencyAt(i) * freqMult,
+                volume: getVolumeAt(i)
+            };
+            steps.push(newStep)
+        }
+        const out = control.createBuffer(12 * (steps.length - 1));
+        const stepDuration = Math.floor(durationTicks * 10 / (steps.length - 1))
+        // #FIXME remove overflow. just do linear falloff in preprocessing before conversion to instrument. could be done in C# parser as well.
+        // #FIXME possibly replace with system respecting ADSR
+        const overflowSteps = 16; //once wave is past max length, gets this many ticks to drop volume
+        for (let i = 0; i < steps.length - 1 && i < (maxWaveTime / 10) + overflowSteps + 1; i++) {
+            const offset = i * 12;
+            let overtimeMulti = 1 - (Math.max(0, i - (maxWaveTime / 10)) / overflowSteps); // 8 overflow steps to linearly drop volume of wave to zero
+            out.setNumber(NumberFormat.UInt8LE, offset, 3);
+            out.setNumber(NumberFormat.UInt16LE, offset + 2, steps[i].frequency);
+            out.setNumber(NumberFormat.UInt16LE, offset + 4, stepDuration);
+            out.setNumber(NumberFormat.UInt16LE, offset + 6, steps[i].volume * overtimeMulti);
+            out.setNumber(NumberFormat.UInt16LE, offset + 8, steps[i + 1].volume * overtimeMulti);
+            out.setNumber(NumberFormat.UInt16LE, offset + 10, steps[i + 1].frequency);
+        }
+
+        return out;
+    }
+
     // add a note to an instrument buffer
-    export function addNote(sndInstr: Buffer, sndInstrPtr: number, ms: number, beg: number, end: number, soundWave: number, hz: number, volume: number, endHz: number) {
+    export function addNote(
+        sndInstr: Buffer, 
+        sndInstrPtr: number, 
+        ms: number, 
+        beg: number, 
+        end: number, 
+        soundWave: number, 
+        hz: number, 
+        volume: number, 
+        endHz: number
+    ) {
         if (ms > 0) {
             sndInstr.setNumber(NumberFormat.UInt8LE, sndInstrPtr, soundWave)
             sndInstr.setNumber(NumberFormat.UInt8LE, sndInstrPtr + 1, 0)
@@ -357,7 +498,14 @@ namespace MidiSongExtension.Instruments {
         cycle 64	    18
     */
     const BUFFER_SIZE = 12;
-    export function quasiParsePlay(melodyStr: string, startTime: number, duration: number, volume: number, releaseOverlap: boolean, nonLinearFalloff: boolean) {
+    export function quasiParsePlay(
+        melodyStr: string, 
+        startTime: number, 
+        duration: number, 
+        volume: number, 
+        releaseOverlap: boolean, 
+        nonLinearFalloff: boolean
+    ) {
         volume = Math.max(0, Math.min(255, (volume * music.volume()) >> 8));
 
         // 1 - triangle, 3 - sine, etc.
@@ -386,7 +534,10 @@ namespace MidiSongExtension.Instruments {
         let parseNextNumber: () => number = function (): number {
             let numStr = "";
             let isFloat = false;
-            while (charIndex < melodyStr.length && (isDigit(melodyStr.charAt(charIndex)) || melodyStr.charAt(charIndex) == ".")) {
+            while (
+                charIndex < melodyStr.length && 
+                (isDigit(melodyStr.charAt(charIndex)) || melodyStr.charAt(charIndex) == ".")
+            ) {
                 isFloat = isFloat || (melodyStr.charAt(charIndex) == ".");
                 numStr += melodyStr.charAt(charIndex);
                 charIndex++;
@@ -456,7 +607,13 @@ namespace MidiSongExtension.Instruments {
             sndInstrPtr = addNote(sndInstr, sndInstrPtr, formDuration, beg, end, waveform, freqStart, volume, freqEnd);
         }
 
-        const addNonLinearForms = (formDuration: number, begVol: number, endVol: number, msOff: number, steepness: number) => {
+        const addNonLinearForms = (
+            formDuration: number, 
+            begVol: number, 
+            endVol: number, 
+            msOff: number, 
+            steepness: number
+        ) => {
             // handle changing frequency
             let freqStart = startHz;
             let freqEnd = endHz;
@@ -477,6 +634,10 @@ namespace MidiSongExtension.Instruments {
             if (formDuration % stepSize == 0)
                 maxSteps -= 1;
 
+            // custom nonlinear decay function with custom steepness value
+            // similar to MakeCode one but (in theory) faster to compute
+            // steepness of 3-4 roughly matches MakeCode logarithmic falloff  
+            // https://www.desmos.com/calculator/nv35xzsazh
             let A1 = begVol;
             let A2 = endVol;
             let t1 = 0;
@@ -495,15 +656,11 @@ namespace MidiSongExtension.Instruments {
                 let currentVol = (A1 - q) * Math.pow(0.5, p * (t - t1) / (t2 - t1)) + q;
                 sndInstrPtr = addNote(sndInstr, sndInstrPtr, stepSize, lastVol, currentVol, waveform, freqStart, volume, freqEnd);
                 lastVol = currentVol;
-                //game.splash("added form s" + step + " amp: " + currentVol);
             }
 
             // add the remaining note 
             let lastNoteDuration = formDuration - maxSteps * stepSize;
             sndInstrPtr = addNote(sndInstr, sndInstrPtr, lastNoteDuration, lastVol, endVol, waveform, freqStart, volume, freqEnd);
-            //game.splash("added final form amp: " + endVol);
-            if (lastNoteDuration < 1)
-                game.splash("last not problem error");
         }
 
         let currMs = ms
@@ -516,13 +673,18 @@ namespace MidiSongExtension.Instruments {
 
         // add the four waveforms. #FIXME some parts changed from melodyPlayer, may not behave correctly.
         sndInstrPtr = 0;
+
+        // add linear attack
         addForm(envA, 0, 255, 0);
+
+        // add linear or non linear decay
         if (!nonLinearFalloff)
             addForm(envD, 255, envS, envA);
         else
             addNonLinearForms(envD, 255, envS, envA, 8); //#FIXME add support for custom steepness functions? default to 8?
 
         // if overlap then last wave starts at duration ms, otherwise, offset.
+        // release overlap controls if the release portion is not included in duration, overlapping with the start of the next note, or not.
         if (releaseOverlap) {
             addForm(currMs - (envA + envD), envS, envS, envD + envA)
             addForm(envR, envS, 0, currMs)
@@ -544,45 +706,31 @@ namespace MidiSongExtension.Instruments {
     // blank instrument to ignore a channel
     export const NoSound: InstrumentFunction = (frequency, startTime, duration, volume) => {
 
-    }
+    }    
 
-    // attempted guitar sound #TODO make work with envelope 
-    let guitarSoundWaveTable = [
-        [56, -64],
-        [82, -26.3],
-        [125, -68.7],
-        [165, -15.9],
-        [248, -19.7],
-        [331, -32.2],
-        [414, -36.6],
-        [496, -26.3],
-        [579, -32.7],
-        [661, -56.7],
-
-    ];
-    export const AcousticGuitar = GenerateSineWaveInstrument(guitarSoundWaveTable, 1, 3, true, 0, 255, false);
-
-    let testGuitarWaveTable = [
-        [1, 0.5],
-        [2, 0.9],
-        [3, 1.0],
-        [4, 0.6],
-    ]
-
-    export const TestNonSineGuitar: InstrumentFunction = (frequency, startTime, duration, volume) => {
-        if (volume == undefined)
-            volume = 100;
-
-        quasiParsePlay("~3 @0,1370,0,1620 !" + (frequency * testGuitarWaveTable[0][0]) + "," + duration, startTime, duration, (volume * testGuitarWaveTable[0][1]), true, false);
-        quasiParsePlay("~3 @0,1370,0,1620 !" + (frequency * testGuitarWaveTable[1][0]) + "," + duration, startTime, duration, (volume * testGuitarWaveTable[1][1]), true, false);
-        quasiParsePlay("~3 @0,1370,0,1620 !" + (frequency * testGuitarWaveTable[2][0]) + "," + duration, startTime, duration, (volume * testGuitarWaveTable[2][1]), true, false);
-        quasiParsePlay("~3 @0,1370,0,1620 !" + (frequency * testGuitarWaveTable[3][0]) + "," + duration, startTime, duration, (volume * testGuitarWaveTable[3][1]), true, false);
-
-        quasiParsePlay("~3 @0,400,0,400 !" + (frequency * 1) + "," + duration, startTime, duration, (volume * DBtoAmp(-23)), true, false);
-        quasiParsePlay("~3 @0,400,16,400 !" + (frequency * 1) + "," + duration, startTime, duration, (volume * DBtoAmp(-13)), true, false);
-        quasiParsePlay("~3 @5,1930,16,400 !" + (frequency * 1) + "," + duration, startTime, duration, (volume * DBtoAmp(-17)), true, false);
-
-    }
+    // experimental guitar sound using more advanced techniques.
+    // #FIXME duration not implemented
+    // #FIXME release overlap not implemented
+    // #FIXME base volume untested
+    // #FIXME default volume untested
+    // #TODO verify base note
+    // #TODO test highPass and minLength variations
+    // #TODO examine/fix etheral background tones that pop up later
+    // #TODO possibly add falloff or redo sound with falloff in audacity
+    // #TODO sounds different from vscode. examine effects of different environments
+    export const TestAdvancedGuitar: InstrumentFunction = AdvancedGenSynthInstrument(
+        i => { return RawSoundData.GuitarNoteData[i] },
+        () => { return RawSoundData.GuitarNoteData.length },
+        164.8,  // E3? pretty sure that's the base note
+        0.097238, // #FIXME gotten from spear but seems too small?
+        3200,
+        14,
+        0,
+        false, //#FIXME change when implemented
+        255, //#FIXME test if too loud
+        false, //#FIXME change when implemented
+        1000, //#FIXME add falloff instead
+    );
 
     // credit for piano to ThatUruguayanGuy
     // from https://forum.makecode.com/t/various-instruments-recreated-in-makecode-arcade/24040
