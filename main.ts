@@ -67,7 +67,7 @@ namespace MidiSongExtension {
                 let duration = MidiPlayer.nextNoteData[2] * MidiPlayer.resolution;
                 let pitch = DataParsing.NoteIndexToFrequency(MidiPlayer.nextNoteData[3]);
                 let channel = MidiPlayer.nextNoteData[4];
-                
+
                 // call appropriate instrument function
                 Instruments.PlayNote(
                     MidiPlayer.activeSong.instrumentMap[channel],
@@ -84,7 +84,7 @@ namespace MidiSongExtension {
 
                 notesQueued++;
             }
-            if(MidiPlayer.usingDebugSprite) 
+            if (MidiPlayer.usingDebugSprite)
                 MidiPlayer.debugSprite.sayText("queued " + notesQueued + " notes", MidiPlayer.timeBuffer / 2);
         }
 
@@ -95,7 +95,7 @@ namespace MidiSongExtension {
 
         private static Initialize() {
             MidiPlayer.timeBuffer = 2000;
-            
+
             // twice per timeBuffer check if next block of notes should be queued.
             game.onUpdateInterval(MidiPlayer.timeBuffer / 2, function () {
                 // if within buffer, advance chunk, and queue up next chunk of notes
@@ -111,10 +111,10 @@ namespace MidiSongExtension {
             MidiPlayer.activeSong = song;
             MidiPlayer.playing = true;
 
-            if(!MidiPlayer.initialized) {
+            if (!MidiPlayer.initialized) {
                 MidiPlayer.Initialize();
             }
-        
+
             // get important song playing data
             MidiPlayer.resolution = song.resolution;
             MidiPlayer.timePerChunk = 2048 * MidiPlayer.resolution;
@@ -291,14 +291,28 @@ namespace MidiSongExtension.Instruments {
     export type InstrumentFunction = (frequency: number, startTime: number, duration: number, volume?: number) => void;
 
     // generate instrument from a table of pitch:amplitude pairs
-    function GenerateSineWaveInstrument(waveTable: number[][], baseFreqIndex: number, loudestIndex: number, releaseOverlap: boolean, durationOffset: number, defaultVolume: number): InstrumentFunction {
+    function GenerateSineWaveInstrument(waveTable: number[][], baseFreqIndex: number, loudestIndex: number, releaseOverlap: boolean, durationOffset: number, defaultVolume: number, nonLinearFalloff: boolean): InstrumentFunction {
         return (frequency: number, startTime: number, duration: number, volume?: number) => {
             if (volume == undefined)
                 volume = defaultVolume;
             for (let waveData of waveTable) {
-                quasiParsePlay("~3, @1,1,255,1 !" + frequency * waveData[0] / waveTable[baseFreqIndex][0], startTime, duration + durationOffset, volume * DBtoAmp(waveData[1] - waveTable[loudestIndex][1]), releaseOverlap);
+                quasiParsePlay("~3, @1,1,255,1 !" + frequency * waveData[0] / waveTable[baseFreqIndex][0], startTime, duration + durationOffset, volume * DBtoAmp(waveData[1] - waveTable[loudestIndex][1]), releaseOverlap, nonLinearFalloff);
             }
         };
+    }
+
+    function GenerateSineWaveInstrumentAdvanced(waveTable: number[][], baseFreqIndex: number, loudestIndex: number, releaseOverlap: true, defaultVolume: number, minDuration: number): InstrumentFunction {
+        return (frequency: number, startTime: number, duration: number, volume?: number) => {
+            if (volume == undefined)
+                volume = defaultVolume;
+            if (duration < minDuration)
+                duration = minDuration;
+            for (let waveData of waveTable) {
+                // frequency, amplitude, startTime, duration?, a, d, s, r 
+                let playedFreq = frequency * waveData[0] / waveTable[baseFreqIndex][0];
+                let amplitude = volume * DBtoAmp(waveData[1] - waveTable[loudestIndex][1])
+            }
+        }
     }
 
     // play a note given an instrument function, pitch (hz), and a length (ms)
@@ -327,8 +341,23 @@ namespace MidiSongExtension.Instruments {
         return sndInstrPtr
     }
 
+    /*
+        triangle	    1
+        sawtooth	    2
+        sine	        3
+        tunable noise	4
+        noise	        5
+        square (10%)	11
+        square (20%)	12
+        square (30%)	13
+        square (40%)	14
+        square (50%)	15
+        cycle 16	    16
+        cycle 32	    17
+        cycle 64	    18
+    */
     const BUFFER_SIZE = 12;
-    export function quasiParsePlay(melodyStr: string, startTime: number, duration: number, volume: number, releaseOverlap: boolean) {
+    export function quasiParsePlay(melodyStr: string, startTime: number, duration: number, volume: number, releaseOverlap: boolean, nonLinearFalloff: boolean) {
         volume = Math.max(0, Math.min(255, (volume * music.volume()) >> 8));
 
         // 1 - triangle, 3 - sine, etc.
@@ -406,11 +435,29 @@ namespace MidiSongExtension.Instruments {
             }
         }
 
-        // set up instruction buffer #FIXME why 5 * BUFFER_SIZE?
-        let sndInstr = control.createBuffer(5 * BUFFER_SIZE)
+        // set up instruction buffer #FIXME why 5 * BUFFER_SIZE? 
+        // #FIXME changed to 18, should be able to handle non linear, but examine better solutions.
+        let sndInstr = control.createBuffer(18 * BUFFER_SIZE)
         let sndInstrPtr = 0
 
+        // seems to do volume for this section only, frequency over the entire wave.
         const addForm = (formDuration: number, beg: number, end: number, msOff: number) => {
+            let freqStart = startHz;
+            let freqEnd = endHz;
+
+            if (ms < 0)
+                game.splash("zero ms detected. why?");
+            const envelopeWidth = ms > 0 ? ms : duration * 125 + envR;
+            if (endHz != startHz && envelopeWidth != 0) {
+                const slope = (freqEnd - freqStart) / envelopeWidth;
+                freqStart = startHz + slope * msOff;
+                freqEnd = startHz + slope * (msOff + formDuration);
+            }
+            sndInstrPtr = addNote(sndInstr, sndInstrPtr, formDuration, beg, end, waveform, freqStart, volume, freqEnd);
+        }
+
+        const addNonLinearForms = (formDuration: number, begVol: number, endVol: number, msOff: number, steepness: number) => {
+            // handle changing frequency
             let freqStart = startHz;
             let freqEnd = endHz;
 
@@ -420,7 +467,43 @@ namespace MidiSongExtension.Instruments {
                 freqStart = startHz + slope * msOff;
                 freqEnd = startHz + slope * (msOff + formDuration);
             }
-            sndInstrPtr = addNote(sndInstr, sndInstrPtr, formDuration, beg, end, waveform, freqStart, volume, freqEnd);
+
+            let stepSize = 100; //#FIXME add support for different stepSizes? low seemed to work poorly.
+            let step = 0;
+            let lastVol = begVol;
+            let maxSteps = Math.floor(formDuration / stepSize);
+
+            // save at least one stepSize worth of ms for last note.
+            if (formDuration % stepSize == 0)
+                maxSteps -= 1;
+
+            let A1 = begVol;
+            let A2 = endVol;
+            let t1 = 0;
+            let t2 = formDuration;
+            let p = steepness;
+            let exponent = Math.pow(0.5, p);
+            let q: number;
+            if (A2 > 0)
+                q = A2 * (1 - ((A1 / A2) * exponent)) / (1 - exponent);
+            else
+                q = -(A1 * exponent) / (1 - exponent);
+
+            // add small linear forms approximating a decaying exponential
+            for (; step < maxSteps; step++) {
+                let t = step * stepSize;
+                let currentVol = (A1 - q) * Math.pow(0.5, p * (t - t1) / (t2 - t1)) + q;
+                sndInstrPtr = addNote(sndInstr, sndInstrPtr, stepSize, lastVol, currentVol, waveform, freqStart, volume, freqEnd);
+                lastVol = currentVol;
+                //game.splash("added form s" + step + " amp: " + currentVol);
+            }
+
+            // add the remaining note 
+            let lastNoteDuration = formDuration - maxSteps * stepSize;
+            sndInstrPtr = addNote(sndInstr, sndInstrPtr, lastNoteDuration, lastVol, endVol, waveform, freqStart, volume, freqEnd);
+            //game.splash("added final form amp: " + endVol);
+            if (lastNoteDuration < 1)
+                game.splash("last not problem error");
         }
 
         let currMs = ms
@@ -432,9 +515,14 @@ namespace MidiSongExtension.Instruments {
         }
 
         // add the four waveforms. #FIXME some parts changed from melodyPlayer, may not behave correctly.
-        sndInstrPtr = 0; // what does this dp
+        sndInstrPtr = 0;
         addForm(envA, 0, 255, 0);
-        addForm(envD, 255, envS, envA);
+        if (!nonLinearFalloff)
+            addForm(envD, 255, envS, envA);
+        else
+            addNonLinearForms(envD, 255, envS, envA, 8); //#FIXME add support for custom steepness functions? default to 8?
+
+        // if overlap then last wave starts at duration ms, otherwise, offset.
         if (releaseOverlap) {
             addForm(currMs - (envA + envD), envS, envS, envD + envA)
             addForm(envR, envS, 0, currMs)
@@ -472,7 +560,29 @@ namespace MidiSongExtension.Instruments {
         [661, -56.7],
 
     ];
-    export const AcousticGuitar = GenerateSineWaveInstrument(guitarSoundWaveTable, 1, 3, false, -10, 255);
+    export const AcousticGuitar = GenerateSineWaveInstrument(guitarSoundWaveTable, 1, 3, true, 0, 255, false);
+
+    let testGuitarWaveTable = [
+        [1, 0.5],
+        [2, 0.9],
+        [3, 1.0],
+        [4, 0.6],
+    ]
+
+    export const TestNonSineGuitar: InstrumentFunction = (frequency, startTime, duration, volume) => {
+        if (volume == undefined)
+            volume = 100;
+
+        quasiParsePlay("~3 @0,1370,0,1620 !" + (frequency * testGuitarWaveTable[0][0]) + "," + duration, startTime, duration, (volume * testGuitarWaveTable[0][1]), true, false);
+        quasiParsePlay("~3 @0,1370,0,1620 !" + (frequency * testGuitarWaveTable[1][0]) + "," + duration, startTime, duration, (volume * testGuitarWaveTable[1][1]), true, false);
+        quasiParsePlay("~3 @0,1370,0,1620 !" + (frequency * testGuitarWaveTable[2][0]) + "," + duration, startTime, duration, (volume * testGuitarWaveTable[2][1]), true, false);
+        quasiParsePlay("~3 @0,1370,0,1620 !" + (frequency * testGuitarWaveTable[3][0]) + "," + duration, startTime, duration, (volume * testGuitarWaveTable[3][1]), true, false);
+
+        quasiParsePlay("~3 @0,400,0,400 !" + (frequency * 1) + "," + duration, startTime, duration, (volume * DBtoAmp(-23)), true, false);
+        quasiParsePlay("~3 @0,400,16,400 !" + (frequency * 1) + "," + duration, startTime, duration, (volume * DBtoAmp(-13)), true, false);
+        quasiParsePlay("~3 @5,1930,16,400 !" + (frequency * 1) + "," + duration, startTime, duration, (volume * DBtoAmp(-17)), true, false);
+
+    }
 
     // credit for piano to ThatUruguayanGuy
     // from https://forum.makecode.com/t/various-instruments-recreated-in-makecode-arcade/24040
@@ -482,7 +592,7 @@ namespace MidiSongExtension.Instruments {
         [3, -1.01],
         [4, -1.01],
     ]
-    export const AcousticGrandPiano = GenerateSineWaveInstrument(acousticGrandWaveTable, 0, 0, true, 0, 100);
+    export const AcousticGrandPiano = GenerateSineWaveInstrument(acousticGrandWaveTable, 0, 0, true, 0, 100, false);
 
     // credit for piano to ThatUruguayanGuy
     // from https://forum.makecode.com/t/various-instruments-recreated-in-makecode-arcade/24040
@@ -494,7 +604,7 @@ namespace MidiSongExtension.Instruments {
         [5, -1.89],
         [6, -1.89],
     ]
-    export const BrightAcousticPiano = GenerateSineWaveInstrument(brightAcousticWaveTable, 0, 0, false, -6, 80);
+    export const BrightAcousticPiano = GenerateSineWaveInstrument(brightAcousticWaveTable, 0, 0, false, -6, 80, false);
 
     // simple bass with 2 saw waves
     export const SawBass: InstrumentFunction = (frequency, startTime, duration, volume) => {
@@ -503,11 +613,11 @@ namespace MidiSongExtension.Instruments {
         //let melodAdk = new music.Melody("~2 @10,1,255,40 !" + frequency + "," + duration);
         //dunno(melodAdk, startTime);
         //quasiParsePlay("~2 @10,1,255,40 !" + frequency, startTime, duration - 30, volume, false);
-        if(volume == undefined)
+        if (volume == undefined)
             volume = 80;
         duration -= 0;
-        quasiParsePlay("~2 @10,1,255,40 !" + frequency + "," + duration, startTime, duration, volume, false);
-        quasiParsePlay("~2 @10,1,255,40 !" + (frequency / 2) + "," + duration, startTime, duration, volume, false);
+        quasiParsePlay("~2 @10,1,255,40 !" + frequency + "," + duration, startTime, duration, volume, false, false);
+        quasiParsePlay("~2 @10,1,255,40 !" + (frequency / 2) + "," + duration, startTime, duration, volume, false, false);
         //game.splash("sawing at: " + frequency, + "for " + duration);
     }
 
@@ -515,13 +625,13 @@ namespace MidiSongExtension.Instruments {
     export const BassDrum: InstrumentFunction = (frequency, startTime, duration, volume) => {
         if (volume == undefined)
             volume = 100;
-        quasiParsePlay("~15 @1,1,90,1 !200,90^1", startTime, duration - 25, volume, false);
+        quasiParsePlay("~15 @1,1,90,1 !200,90^1", startTime, duration - 25, volume, false, false);
     }
 
     // pretty solid hi-hat made from noise
     export const HiHat: InstrumentFunction = (frequency, startTime, duration, volume) => {
         if (volume == undefined)
             volume = 100;
-        quasiParsePlay("~5 @0,50,0,0 !37", startTime, duration, volume, false);
+        quasiParsePlay("~5 @0,50,0,0 !37", startTime, duration, volume, false, false);
     }
 }
