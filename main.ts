@@ -49,6 +49,8 @@ namespace MidiSongExtension {
         public static debugSprite: Sprite;
         public static usingDebugSprite: boolean = false;
 
+        public static playbackSpeed: number = 1;
+
         // when a chunk indicator is hit process it and set other time variables.
         private static ProcessChunkIndicator() {
             if (MidiPlayer.nextNoteData[0] != 1) {
@@ -57,7 +59,7 @@ namespace MidiSongExtension {
             }
 
             // add to chunk time
-            MidiPlayer.chunkTime += MidiPlayer.timePerChunk;
+            MidiPlayer.chunkTime += MidiPlayer.timePerChunk / MidiPlayer.playbackSpeed;
 
             // advance
             MidiPlayer.bufferOffsetIndex++;
@@ -74,8 +76,8 @@ namespace MidiSongExtension {
             ) {
                 // get and process note info
                 let runtime = game.runtime();
-                let trueStartMs = MidiPlayer.nextNoteData[1] * MidiPlayer.resolution + MidiPlayer.chunkTime - runtime;
-                let duration = MidiPlayer.nextNoteData[2] * MidiPlayer.resolution;
+                let trueStartMs = MidiPlayer.nextNoteData[1] * MidiPlayer.resolution / MidiPlayer.playbackSpeed + MidiPlayer.chunkTime - runtime;
+                let duration = MidiPlayer.nextNoteData[2] * MidiPlayer.resolution / MidiPlayer.playbackSpeed;
                 let pitch = DataParsing.NoteIndexToFrequency(MidiPlayer.nextNoteData[3]);
                 let channel = MidiPlayer.nextNoteData[4];
 
@@ -112,7 +114,7 @@ namespace MidiSongExtension {
                 // if within buffer, advance chunk, and queue up next chunk of notes
                 if (
                     MidiPlayer.playing && 
-                    MidiPlayer.chunkTime + MidiPlayer.timePerChunk - game.runtime() < MidiPlayer.timeBuffer && 
+                    MidiPlayer.chunkTime + MidiPlayer.timePerChunk / MidiPlayer.playbackSpeed - game.runtime() < MidiPlayer.timeBuffer && 
                     MidiPlayer.nextNoteData != undefined
                 ) {
                     MidiPlayer.ProcessChunkIndicator();
@@ -121,13 +123,17 @@ namespace MidiSongExtension {
             });
         }
 
-        public static Start(song: MidiSong): void {
+        public static Start(song: MidiSong, playbackSpeed?: number): void {
             // get the song
             MidiPlayer.activeSong = song;
             MidiPlayer.playing = true;
 
             if (!MidiPlayer.initialized) {
                 MidiPlayer.Initialize();
+            }
+
+            if(playbackSpeed != undefined) {
+                MidiPlayer.playbackSpeed = playbackSpeed;
             }
 
             // get important song playing data
